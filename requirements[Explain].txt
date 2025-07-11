@@ -1,0 +1,9 @@
+numpy               # คำนวณ array
+opencv-python       # จัดการรูปภาพ
+matplotlib          # แสดงภาพ / กราฟ
+scikit-learn        # ใช้สำหรับแบ่งข้อมูล / metrics
+torch               # สร้าง deep learning model
+torchvision         # ใช้กับภาพและโมเดลสำเร็จรูป
+jupyter             # Notebook สำหรับทดลองโค้ด
+tqdm                # แถบสถานะตอนเทรนโมเดล
+
