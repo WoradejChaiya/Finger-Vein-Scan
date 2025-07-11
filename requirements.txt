@@ -6,3 +6,4 @@ torch
 torchvision
 jupyter
 tqdm
+pandas

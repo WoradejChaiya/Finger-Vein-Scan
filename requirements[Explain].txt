@@ -6,4 +6,4 @@ torch               # สร้าง deep learning model
 torchvision         # ใช้กับภาพและโมเดลสำเร็จรูป
 jupyter             # Notebook สำหรับทดลองโค้ด
 tqdm                # แถบสถานะตอนเทรนโมเดล
-
+pandas              # จัดการข้อมูลตาราง (เหมือน Excel) ได้ง่ายและเร็ว
