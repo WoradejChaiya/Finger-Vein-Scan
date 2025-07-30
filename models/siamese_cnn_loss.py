@@ -1,11 +1,19 @@
-import torch
-import torch.nn.functional as F
+# models/siamese_cnn_loss.py
 
-def siamese_cnn_contrastive_loss(emb1, emb2, label, margin=1.0): # ฟังก์ชัน loss สำหรับ Siamese Network แบบ contrastive
-    euclidean_distance = F.pairwise_distance(emb1, emb2) # คำนวณระยะห่างแบบ Euclidean ระหว่าง embedding ทั้งสอง
-    loss = torch.mean( # คำนวณ loss ทั้งหมด แล้วเอาค่าเฉลี่ย
-        label * torch.pow(euclidean_distance, 2) +
-        (1 - label) * torch.pow(torch.clamp(margin - euclidean_distance, min=0.0), 2)
-    ) 
-    # ถ้า label=1 loss = dist²     ถ้า label=0 loss = (margin - dist)²     
-    return loss
+import torch  # ใช้สำหรับ tensor และคำนวณ
+import torch.nn as nn  # โมดูลสำหรับ neural network
+import torch.nn.functional as F  # ฟังก์ชันช่วยเช่น pairwise_distance
+
+# นิยาม ContrastiveLoss ในรูปแบบของ nn.Module
+class ContrastiveLoss(nn.Module):
+    def __init__(self, margin=1.0):  # สร้าง class และกำหนด margin (ระยะห่างขั้นต่ำ)
+        super(ContrastiveLoss, self).__init__()  # เรียก constructor ของ nn.Module
+        self.margin = margin  # บันทึกค่า margin ไว้ใน object
+
+    def forward(self, output1, output2, label):  # ฟังก์ชันหลัก ใช้คำนวณ loss
+        euclidean_distance = F.pairwise_distance(output1, output2)  # ระยะห่างแบบ Euclidean ระหว่าง embeddings
+        loss = torch.mean(
+            (1 - label) * torch.pow(euclidean_distance, 2) +  # ถ้าต่าง class → รักษาระยะห่างให้มาก
+            label * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2)  # ถ้าเหมือนกัน → บีบให้ใกล้
+        )
+        return loss  # ส่งผลลัพธ์ loss กลับ
