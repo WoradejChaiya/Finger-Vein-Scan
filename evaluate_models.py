@@ -97,7 +97,7 @@ def main():
 
         acc = accuracy(all_labels, all_preds)
         try:
-            # ถ้า metrics.far_frr_eer รองรับ multiclass
+            # ถ้า metrics.far_frr_eer รองaccรับ multiclass
             _, far, frr, _, _ = far_frr_eer(all_preds, all_labels)
         except:
             far, frr = float("nan"), float("nan")
