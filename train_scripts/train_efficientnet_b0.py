@@ -1,133 +1,70 @@
-import os
 import sys
-sys.path.append(os.path.abspath("."))
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import torch
-import pandas as pd
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+import torch.optim as optim
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from tqdm import tqdm  # เพิ่ม tqdm สำหรับ progress bar
+import pandas as pd
+
+from datasets.efficientnet_b0_dataset import EfficientNetB0Dataset
+from models.efficientnet_b0_model import EfficientNetB0Model
+from models.efficientnet_b0_loss import efficientnet_b0_loss_fn
+from transforms.efficientnet_b0_transforms import transform_pipeline
+
+# ====== เตรียมข้อมูลจาก CSV ======
+df = pd.read_csv('data/split_combined.csv')
+train_df = df[df['split'] == 'train']
+image_paths = train_df['filepath'].tolist()
+id_list = train_df['id'].tolist()
+
+unique_ids = sorted(list(set(id_list)))
+id2idx = {id_: idx for idx, id_ in enumerate(unique_ids)}
+labels = [id2idx[x] for x in id_list]
+num_classes = len(unique_ids)
+
 import pickle
+with open("results/efficientnet_b0_unique_ids.pkl", "wb") as f:
+    pickle.dump(unique_ids, f)
 
-def resolve_image_path(row):
-    # หาชื่อไฟล์ใน data/ ทุก folder (กันกรณี path ใน .csv ไม่ตรง)
-    fname = os.path.basename(row["filepath"])
-    for root, _, files in os.walk("data"):
-        if fname in files:
-            return os.path.join(root, fname)
-    print(f"Warning: ไม่พบไฟล์ {fname} ... ข้าม")
-    return None
+dataset = EfficientNetB0Dataset(image_paths, labels, transform_pipeline)
 
-def main():
-    # ==== Import custom modules ที่ใช้เฉพาะแต่ละโมเดล ====
-    from datasets.siamese_cnn_dataset import SiameseCnnDataset
-    from models.siamese_cnn_model import SiameseCnnModel
-    from transforms.transforms_config import transform_pipeline as siamese_transform
+# *** Windows: num_workers=0 แก้ bug exited unexpectedly ***
+loader = DataLoader(dataset, batch_size=128, shuffle=True, num_workers=12)
 
-    from datasets.vit_dataset import ViTDataset
-    from models.vit_model import ViTModel
-    from transforms.vit_transforms import vit_transform_pipeline as vit_transform
+# ====== เตรียมโมเดล ======
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = EfficientNetB0Model(num_classes=num_classes).to(device)
 
-    from datasets.efficientnet_b0_dataset import EfficientNetB0Dataset
-    from models.efficientnet_b0_model import EfficientNetB0Model
-    from transforms.efficientnet_b0_transforms import transform_pipeline as eff_transform
+# ====== Loss, Optimizer, Scheduler ======
+criterion = efficientnet_b0_loss_fn
+optimizer = optim.AdamW(model.parameters(), lr=1e-4)
+scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=3)
 
-    from utils.metrics import accuracy, far_frr_eer
+# ====== Training Loop ======
+num_epochs = 5
+best_loss = float('inf')
+for epoch in range(num_epochs):
+    model.train()
+    running_loss = 0.0
 
-    # ==== 1. Load CSV และตรวจสอบไฟล์จริง ====
-    CSV_PATH = "data/split_combined.csv"
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # tqdm progress bar 
+    for images, targets in tqdm(loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+        images, targets = images.to(device), targets.to(device)
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
 
-    df = pd.read_csv(CSV_PATH)
-    df["filepath"] = df.apply(resolve_image_path, axis=1)
-    df = df[df["filepath"].notnull()].reset_index(drop=True)
-    unique_ids = sorted(df["id"].unique())
-    id_to_idx = {id_: idx for idx, id_ in enumerate(unique_ids)}
-    df["label_idx"] = df["id"].map(id_to_idx)
+    avg_loss = running_loss / len(loader)
+    scheduler.step(avg_loss)
+    print(f"Epoch [{epoch+1}/{num_epochs}]  Loss: {avg_loss:.4f}")
 
-    results = {"model": [], "accuracy": [], "eer": [], "far": [], "frr": []}
-
-    # ==== 2. SiameseCNN (Binary classification) ====
-    print("\n===== SiameseCNN Evaluation =====")
-    siam_ds = SiameseCnnDataset(df["filepath"], df["label_idx"], siamese_transform)
-    siam_loader = DataLoader(siam_ds, batch_size=64, num_workers=4, pin_memory=True)
-    siam_model = SiameseCnnModel().to(DEVICE).eval()
-
-    all_dists, all_labels, all_preds = [], [], []
-    with torch.no_grad():
-        for img1, img2, lbl in tqdm(siam_loader, desc="SiameseCNN (batch)", ncols=100):
-            img1, img2 = img1.to(DEVICE), img2.to(DEVICE)
-            emb1, emb2 = siam_model(img1, img2)
-            dists = torch.nn.functional.pairwise_distance(emb1, emb2).cpu().numpy()
-            preds = (dists < 1.0).astype(int)
-            all_dists.extend(dists)
-            all_preds.extend(preds)
-            all_labels.extend(lbl.numpy())
-
-    siam_acc = accuracy(all_labels, all_preds)
-    siam_eer, siam_far, siam_frr, _, _ = far_frr_eer(all_dists, all_labels)
-    results["model"].append("SiameseCNN")
-    results["accuracy"].append(siam_acc)
-    results["eer"].append(siam_eer)
-    results["far"].append(siam_far)
-    results["frr"].append(siam_frr)
-
-    # Save ข้อมูลสำหรับ Confusion Matrix & ROC
-    os.makedirs("results", exist_ok=True)
-    with open("results/SiameseCNN_cm_data.pkl", "wb") as f:
-        pickle.dump([all_labels, all_preds], f)
-    with open("results/SiameseCNN_roc_data.pkl", "wb") as f:
-        pickle.dump([all_labels, all_dists], f)
-
-    # ==== 3. ViT และ EfficientNet (Multiclass classification) ====
-    print("\n===== ViT & EfficientNetB0 Evaluation =====")
-
-    model_list = [
-        ("ViT", ViTModel, ViTDataset, vit_transform),
-        ("EfficientNetB0", EfficientNetB0Model, EfficientNetB0Dataset, eff_transform)
-    ]
-    # tqdm ครอบ loop model ให้เห็น progress รวม
-    for model_name, ModelCls, DatasetCls, trans in tqdm(model_list, desc="Evaluate All Models", ncols=100):
-        print(f"\n----- {model_name} -----")
-        ds = DatasetCls(df["filepath"], df["label_idx"], trans)
-        loader = DataLoader(ds, batch_size=64, num_workers=4, pin_memory=True)
-        model = ModelCls(num_classes=len(unique_ids)).to(DEVICE).eval()
-
-        all_preds, all_labels, all_scores = [], [], []
-        with torch.no_grad():
-            for img, lbl in tqdm(loader, desc=f"{model_name} (batch)", leave=False, ncols=100):
-                img, lbl = img.to(DEVICE), lbl.to(DEVICE)
-                logits = model(img)
-                preds = logits.argmax(dim=1).cpu().numpy()
-                all_preds.extend(preds)
-                all_labels.extend(lbl.cpu().numpy())
-                # ค่า score (confidence) สำหรับ ROC
-                scores = torch.softmax(logits, dim=1).max(dim=1).values.cpu().numpy()
-                all_scores.extend(scores)
-
-        acc = accuracy(all_labels, all_preds)
-        try:
-            # ถ้า metrics.far_frr_eer รองรับ multiclass
-            _, far, frr, _, _ = far_frr_eer(all_preds, all_labels)
-        except Exception as e:
-            print(f"far_frr_eer ERROR: {e}")
-            far, frr = float("nan"), float("nan")
-        results["model"].append(model_name)
-        results["accuracy"].append(acc)
-        results["eer"].append(float("nan"))  # multiclass ปกติไม่ได้ใช้ EER
-        results["far"].append(far)
-        results["frr"].append(frr)
-
-        # Save สำหรับ confusion matrix / ROC curve
-        with open(f"results/{model_name}_cm_data.pkl", "wb") as f:
-            pickle.dump([all_labels, all_preds], f)
-        with open(f"results/{model_name}_roc_data.pkl", "wb") as f:
-            pickle.dump([all_labels, all_scores], f)
-
-    # ==== 4. Save metrics summary (CSV) ====
-    df_res = pd.DataFrame(results)
-    df_res.to_csv("results/metrics.csv", index=False)
-    print("\n===== Summary =====")
-    print(df_res)
-
-if __name__ == "__main__":
-    main()
+    if avg_loss < best_loss:
+        best_loss = avg_loss
+        torch.save(model.state_dict(), "results/efficientnet_b0_best.pth")
+        print("Saved new best model.")
